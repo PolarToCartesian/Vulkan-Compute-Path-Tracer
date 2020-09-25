@@ -1,0 +1,121 @@
+#version 440
+#extension GL_ARB_separate_shader_objects : enable
+
+#define WORKGROUP_SIZE 32
+#define WIDTH  (1920 / 2)
+#define HEIGHT (1080 / 2)
+#define SPP_COUNT (100)
+
+#define FLT_MAX (3.402823466e+38)
+#define EPSILON (0.001f)
+
+layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
+
+const vec3 skyDarkBlue  = vec3(53,  214, 237) / 255.f;
+const vec3 skyLightBlue = vec3(201, 246, 255) / 255.f;
+
+const float fov         = 3.141592 * 0.75f;
+const float halfFovTan  = tan(fov / 2.f);
+const float aspectRatio = WIDTH / float(HEIGHT);
+
+layout(std140, binding = 0) buffer buf
+{
+  vec4 imageData[];
+};
+
+struct Material {
+  vec4 diffuseColor;
+};
+
+struct Sphere {
+  vec3  center;
+  float radius;
+  vec4  color;
+};
+
+struct Ray {
+  vec3 origin;
+  vec3 direction;
+};
+
+struct Intersection {
+  float  t;
+  vec3   location;
+  Sphere object;
+};
+
+Sphere[1] spheres = {
+  Sphere(vec3(0.f, 0.f, 2.f), 0.5f, vec4(1.f, 0.f, 0.f, 0.f))
+};
+
+Intersection Intersects(const Ray ray, const Sphere sphere) {
+  const vec3  L    = sphere.center - ray.origin;
+  const float tca = dot(L, ray.direction);
+  const float d2  = dot(L, L) - tca * tca;
+
+  if (d2 > sphere.radius)
+    return Intersection(FLT_MAX, vec3(0.f, 0.f, 0.f), sphere);
+  
+  const float thc = sqrt(sphere.radius - d2);
+  float t0 = tca - thc;
+  float t1 = tca + thc;
+
+  if (t0 > t1) {
+    const float tmp = t0;
+    t0 = t1;
+    t1 = tmp;
+  }
+
+  if (t0 < EPSILON) {
+    t0 = t1;
+
+    if (t0 < 0)
+      return Intersection(FLT_MAX, vec3(0.f, 0.f, 0.f), sphere);
+  }
+
+  return Intersection(t0, ray.origin + t0 * ray.direction, sphere);
+}
+
+vec4 TracePath(const Ray inRay) {
+  Intersection closestIntersection = Intersection(FLT_MAX, vec3(0.f, 0.f, 0.f), Sphere(vec3(0.f), 0.f, vec4(0.f)));
+  for (uint i = 0; i < spheres.length(); i++) {
+    Intersection currentIntersection = Intersects(inRay, spheres[i]);
+    if (currentIntersection.t < closestIntersection.t)
+      closestIntersection = currentIntersection;
+  }
+
+  if (closestIntersection.t != FLT_MAX) {
+    return closestIntersection.object.color;
+  } else {
+    // Draw Sky Color
+    const float ratio = gl_GlobalInvocationID.y/float(HEIGHT);
+    return vec4((ratio * skyLightBlue + (1 - ratio) * skyDarkBlue).xyz, 0.f);
+  }
+}
+
+Ray MakeCameraRay() {
+  const uint x = gl_GlobalInvocationID.x; 
+  const uint y = gl_GlobalInvocationID.y; 
+
+  Ray ray;
+  ray.origin    = vec3(0.f, 0.f, 0.f);
+  ray.direction = 
+    normalize(vec3(halfFovTan * (2 * (x + 0.5f) / float(WIDTH) - 1.f) * aspectRatio,
+                   halfFovTan * (2 * (HEIGHT - y + 0.5f) / float(HEIGHT) - 1.f),
+                   1.f));
+
+  return ray;
+}
+
+void main() {
+  if(gl_GlobalInvocationID.x >= WIDTH || gl_GlobalInvocationID.y >= HEIGHT)
+      return;
+  
+  vec4 finalPixelColor  = vec4(0.f, 0.f, 0.f, 0.f);
+  for (uint sampleIndex = 0; sampleIndex < SPP_COUNT; sampleIndex++) {
+    finalPixelColor += TracePath(MakeCameraRay());
+  }
+  finalPixelColor /= SPP_COUNT;
+
+  imageData[WIDTH * gl_GlobalInvocationID.y + gl_GlobalInvocationID.x] = finalPixelColor;
+}

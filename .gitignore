@@ -1,2 +1,8 @@
-win
-lin
+win/
+lin/
+private/
+*.exwe
+*.bat
+*.bin
+*.ppm
+*.png
