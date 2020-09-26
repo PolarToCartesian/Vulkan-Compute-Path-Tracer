@@ -1,7 +1,7 @@
 win/
 lin/
 private/
-*.exwe
+*.exe
 *.bat
 *.bin
 *.ppm
