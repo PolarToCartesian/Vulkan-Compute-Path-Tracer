@@ -1,5 +1,4 @@
 #version 440
-#extension GL_EXT_debug_printf : enable
 
 // User defined #defines
 #define WORKGROUP_SIZE (32)       // The Number Of Threads Per Workgroup (NVIDIA: 32, AMD: 64)
@@ -70,14 +69,15 @@ struct Ray {
 };
 
 struct Intersection {
-  float    t;        // distance from the ray's origin to intersection point
-  vec3     location; // location of intersection
-  vec3     normal;   // the normal at the intersection
-  Material material; // the material that the intersected object is made of
+  vec3     inDirection; // the direction of the incoming ray
+  float    t;           // distance from the ray's origin to intersection point
+  vec3     location;    // location of intersection
+  vec3     normal;      // the normal at the intersection
+  Material material;    // the material that the intersected object is made of
 };
 
 #define NULL_RAY          (Ray(vec3(0.0f), vec3(0.0f)))
-#define NULL_INTERSECTION (Intersection(FLT_MAX, vec3(0.f), vec3(0.f), Material(vec4(0.f), vec4(0.f))))
+#define NULL_INTERSECTION (Intersection(vec3(0.f), FLT_MAX, vec3(0.f), vec3(0.f), Material(vec4(0.f), vec4(0.f))))
 
 Sphere[2] spheres = {
   Sphere(vec3(0.00f, 0.f, 2.f), 0.5f, Material(vec4(1.f, 0.f, 0.f, 0.f), vec4(0.f, 0.f, 0.f, 0.f))),
@@ -110,10 +110,11 @@ Intersection Intersects(const Ray ray, const Sphere sphere) {
   }
 
   Intersection intersection;
-  intersection.t        = t0;
-  intersection.location = ray.origin + t0 * ray.direction;
-  intersection.normal   = normalize(intersection.location - sphere.center);
-  intersection.material = sphere.material;
+  intersection.t           = t0;
+  intersection.location    = ray.origin + t0 * ray.direction;
+  intersection.normal      = normalize(intersection.location - sphere.center);
+  intersection.material    = sphere.material;
+  intersection.inDirection = ray.direction;
 
   return intersection;
 }
@@ -133,9 +134,9 @@ Intersection FindClosestIntersection(const Ray inRay) {
 vec4 TracePath(Ray ray) {
   // Fetch All Intersections
   Intersection intersections[MAX_ITERATIONS];
-  for (uint i = 0; i < MAX_ITERATIONS; i++)
-    intersections[i].t = FLT_MAX;
+  for (uint i = 0; i < MAX_ITERATIONS; i++) { intersections[i].t = FLT_MAX; }
 
+  uint intersectionCount = 1;
   for (uint bounceIndex = 0; bounceIndex < MAX_ITERATIONS; bounceIndex++) {
     Intersection intersection = FindClosestIntersection(ray);
 
@@ -147,22 +148,23 @@ vec4 TracePath(Ray ray) {
     // Generate the new ray
     ray.origin    = intersection.location + intersection.normal * EPSILON;
     ray.direction = RandomVec3InUnitSphere();
+  
+    intersectionCount++;
   }
 
   // Compute Color
-  vec4 accumulatedColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
-  for (int i = MAX_ITERATIONS - 1; i >= 0; i--) {
+  vec4 accumulatedColor = vec4(intersectionCount/float(MAX_ITERATIONS), 0.0f, 0.0f, 0.0f);
+
+  for (int i = int(intersectionCount) - 1; i >= 0; i--) {
     vec4 currentBounceColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     if (intersections[i].t == FLT_MAX) {
-      currentBounceColor = vec4(1.f, 1.1f, 1.0f, 0.0f);
+      const float ratio = gl_GlobalInvocationID.y/float(HEIGHT);
+      currentBounceColor = vec4((ratio * skyLightBlue + (1 - ratio) * skyDarkBlue).xyz, 0.f);
     } else {
-      currentBounceColor = vec4(1.f, 0.0f, 0.0f, 0.0f);
+      
     }
-
-    //currentBounceColor = vec4(randomNumberIndex/float(RAND_NUMBER_COUNT), 0.f, randomNumberIndex/float(RAND_NUMBER_COUNT), 0.f);
     
-    // todo +=
     accumulatedColor = currentBounceColor;
   }
 
