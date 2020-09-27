@@ -4,5 +4,5 @@ private/
 *.exe
 *.bat
 *.bin
-*.ppm
-*.png
+output.ppm
+output.png
