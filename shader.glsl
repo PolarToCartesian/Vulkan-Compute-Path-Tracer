@@ -12,6 +12,8 @@
 #define EPSILON (0.001f)          // A Very Small Value
 #define M_PI    (3.1415926535897) // π
 #define RAND_NUMBER_COUNT (100)
+#define TWO_PI_INV (1.f / (2.f * M_PI))
+#define PROBABILITY_OF_NEW_RAY (1.f / (2 * 3.141592f))
 
 // Shader Inputs
 layout (local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1 ) in;
@@ -153,22 +155,20 @@ vec4 TracePath(Ray ray) {
   }
 
   // Compute Color
-  vec4 accumulatedColor = vec4(intersectionCount/float(MAX_ITERATIONS), 0.0f, 0.0f, 0.0f);
-
+  vec4 prevIterationColor = vec4(0.f, 0.f, 0.f, 0.f);
   for (int i = int(intersectionCount) - 1; i >= 0; i--) {
-    vec4 currentBounceColor = vec4(0.0f, 0.0f, 0.0f, 0.0f);
-
     if (intersections[i].t == FLT_MAX) {
-      const float ratio = gl_GlobalInvocationID.y/float(HEIGHT);
-      currentBounceColor = vec4((ratio * skyLightBlue + (1 - ratio) * skyDarkBlue).xyz, 0.f);
+      const float ratio  = gl_GlobalInvocationID.y/float(HEIGHT);
+      prevIterationColor = vec4((ratio * skyLightBlue + (1 - ratio) * skyDarkBlue).xyz, 1.f);
     } else {
-      
+      const float dotProduct = max(min(dot(intersections[i].inDirection*(-1), intersections[i].normal), 1.f), 0.f);
+      prevIterationColor = vec4(float(intersectionCount) / MAX_ITERATIONS);//intersections[i].material.diffuseColor;
     }
-    
-    accumulatedColor = currentBounceColor;
   }
 
-  return max(min(accumulatedColor, 1.f), 0.f);
+  vec4 finalColor = prevIterationColor;
+
+  return finalColor;
 }
 
 Ray GenerateCameraRay() {
