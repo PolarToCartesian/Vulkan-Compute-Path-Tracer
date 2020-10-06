@@ -5,6 +5,7 @@ private/
 *.exe
 *.bat
 *.png
+*.pam
 !screenshots/*.png
 *.sln
 *.vcxproj

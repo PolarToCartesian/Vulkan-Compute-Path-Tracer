@@ -28,23 +28,123 @@
 #endif
 
 // Meant to be modified
-#define RENDER_SURFACE_WIDTH  (1920 / 2)
-#define RENDER_SURFACE_HEIGHT (1080 / 2)
 #define GPU_WORKGROUP_SIZE    (32)       // NVIDIA: 32, AMD: 64
 
+struct Coloru8 {
+    std::uint8_t r, g, b, a;
+}; // Coloru8
+
+struct Colorf32 {
+    float r, g, b, a;
+}; // Colorf32
+
 // Constants
-#define RENDER_SURFACE_PIXEL_COUNT           (RENDER_SURFACE_WIDTH * RENDER_SURFACE_HEIGHT)
-#define RENDER_SURFACE_COLOR_COMPONENT_COUNT (4u)
+class Image {
+private:
+    const std::uint16_t m_width;
+    const std::uint16_t m_height;
+    const std::uint32_t m_nPixels;
 
-#define RENDER_SURFACE_U8_BPP    (RENDER_SURFACE_COLOR_COMPONENT_COUNT)
-#define RENDER_SURFACE_U8_STRIDE (RENDER_SURFACE_WIDTH     * RENDER_SURFACE_U8_BPP)
-#define RENDER_SURFACE_U8_SIZE   (RENDER_SURFACE_U8_STRIDE * RENDER_SURFACE_HEIGHT)
+    std::unique_ptr<Coloru8[]> m_pBuff;
 
-#define RENDER_SURFACE_FLT_BPP    (RENDER_SURFACE_COLOR_COMPONENT_COUNT * sizeof(float))
-#define RENDER_SURFACE_FLT_STRIDE (RENDER_SURFACE_WIDTH      * RENDER_SURFACE_FLT_BPP)
-#define RENDER_SURFACE_FLT_SIZE   (RENDER_SURFACE_FLT_STRIDE * RENDER_SURFACE_HEIGHT)
+public:
+    Image() = default;
 
-std::string GenerateOutpuFilename() noexcept { // the filename w/o the extension
+    Image(const std::uint16_t width, const std::uint16_t height) noexcept
+        : m_width(width), m_height(height),
+          m_nPixels(static_cast<std::uint32_t>(width) * height)
+    {
+        this->m_pBuff = std::make_unique<Coloru8[]>(this->m_nPixels);
+    }
+
+    inline std::uint16_t GetWidth()      const noexcept { return this->m_width;   }
+    inline std::uint16_t GetHeight()     const noexcept { return this->m_height;  }
+    inline std::uint32_t GetPixelCount() const noexcept { return this->m_nPixels; }
+
+    inline Coloru8* GetBufferPtr() const noexcept { return this->m_pBuff.get(); }
+
+    inline       Coloru8& operator()(const size_t i)       noexcept { return this->m_pBuff[i]; }
+    inline const Coloru8& operator()(const size_t i) const noexcept { return this->m_pBuff[i]; }
+
+    inline       Coloru8& operator()(const size_t x, const size_t y)       noexcept { return this->m_pBuff[y * this->m_width + this->m_height]; }
+    inline const Coloru8& operator()(const size_t x, const size_t y) const noexcept { return this->m_pBuff[y * this->m_width + this->m_height]; }
+
+    void Save(const std::string& filename) noexcept { // filename shouldn't contain the file extension
+#ifdef _WIN32 // Use WIC (Windows Imaging Component) To Save A .PNG File Natively
+
+        const std::string  fullFilename = filename + ".png";
+        const std::wstring fullFilenameW(fullFilename.begin(), fullFilename.end());
+
+        Microsoft::WRL::ComPtr<IWICImagingFactory>    factory;
+        Microsoft::WRL::ComPtr<IWICBitmapEncoder>     bitmapEncoder;
+        Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> bitmapFrame;
+        Microsoft::WRL::ComPtr<IWICStream>            outputStream;
+
+        if (CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Could Not Create IWICImagingFactory");
+
+        if (factory->CreateStream(&outputStream) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Create Output Stream");
+
+        if (outputStream->InitializeFromFilename(fullFilenameW.c_str(), GENERIC_WRITE) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Initialize Output Stream From Filename");
+
+        if (factory->CreateEncoder(GUID_ContainerFormatPng, NULL, &bitmapEncoder) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Create Bitmap Encoder");
+
+        if (bitmapEncoder->Initialize(outputStream.Get(), WICBitmapEncoderNoCache) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Initialize Bitmap ");
+
+        if (bitmapEncoder->CreateNewFrame(&bitmapFrame, NULL) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Create A New Frame");
+
+        if (bitmapFrame->Initialize(NULL) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Initialize A Bitmap's Frame");
+
+        if (bitmapFrame->SetSize(this->m_width, this->m_height) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Set A Bitmap's Frame's Size");
+
+        const WICPixelFormatGUID desiredPixelFormat = GUID_WICPixelFormat32bppBGRA;
+
+        WICPixelFormatGUID currentPixelFormat;
+        if (bitmapFrame->SetPixelFormat(&currentPixelFormat) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Set Pixel Format On A Bitmap Frame's");
+
+        if (!IsEqualGUID(currentPixelFormat, desiredPixelFormat))
+            THROW_FATAL_ERROR("[WIC] The Requested Pixel Format Is Not Supported");
+
+        if (bitmapFrame->WritePixels(this->m_height, this->m_width * sizeof(Coloru8), this->m_nPixels * sizeof(Coloru8), (BYTE*)this->m_pBuff.get()) != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Write Pixels To A Bitmap's Frame");
+
+        if (bitmapFrame->Commit() != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Commit A Bitmap's Frame");
+
+        if (bitmapEncoder->Commit() != S_OK)
+            THROW_FATAL_ERROR("[WIC] Failed To Commit Bitmap Encoder");
+
+#else // On Other Operating Systems, Simply Write A .PAM File
+
+        const std::string fullFilename = filename + ".pam";
+
+        // Open
+        FILE* fp = std::fopen(fullFilename.c_str(), "wb");
+
+        if (fp) {
+            // Header
+            std::fprintf(fp, "P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\n MAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", this->m_width, this->m_height);
+
+            // Write Contents
+            std::fwrite(this->m_pBuff.get(), this->m_nPixels * sizeof(Coloru8), 1u, fp);
+
+            // Close
+            std::fclose(fp);
+        }
+
+#endif
+    }
+}; // Image
+
+std::string GenerateOutputFilename() noexcept { // the filename w/o the extension
     const std::time_t cTime = std::time(NULL);
     const std::tm* timePtr = std::localtime(&cTime);
 
@@ -54,7 +154,33 @@ std::string GenerateOutpuFilename() noexcept { // the filename w/o the extension
     return std::string(buff);
 }
 
+struct CommandLineArguments {
+    std::uint16_t surfaceWidth;
+    std::uint16_t surfaceHeight;
+}; // CommandLineArguments
+
+CommandLineArguments ParseCommandLineArguments(int argc, char** argv) noexcept {
+    CommandLineArguments result;
+
+    auto ExtractCommandLineValueForOption = [argc, argv](const char* option) {
+        for (size_t i = 1u; i < argc; i++)
+            if (std::strcmp(argv[i], option) == 0)
+                return argv[i + 1];
+
+        throw std::runtime_error("Missing Command Line Argument !");
+    };
+
+    result.surfaceWidth  = std::atoi(ExtractCommandLineValueForOption("-w"));
+    result.surfaceHeight = std::atoi(ExtractCommandLineValueForOption("-h"));
+
+    return result;
+}
+
 int main(int argc, char** argv) {
+    auto commandLineArguments = ParseCommandLineArguments(argc, argv);
+
+    std::printf("Width: %d, Height: %d\n", commandLineArguments.surfaceWidth, commandLineArguments.surfaceHeight);
+
 #ifdef _WIN32
 
     if (CoInitialize(NULL) != S_OK)
@@ -187,7 +313,7 @@ int main(int argc, char** argv) {
             // Create Render Buffer
             const auto bufferCreateInfo = vk::BufferCreateInfo(
                 vk::BufferCreateFlags{},
-                RENDER_SURFACE_FLT_SIZE,
+                commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32),
                 vk::BufferUsageFlagBits::eStorageBuffer,
                 vk::SharingMode::eExclusive,
                 1u,
@@ -237,7 +363,7 @@ int main(int argc, char** argv) {
             descriptorSet = std::move(logicalDevice.allocateDescriptorSets(descriptorSetAllocateInfo)[0]);
 
             // Initialize Descriptor Set
-            const auto descriptorBufferInfo = vk::DescriptorBufferInfo(pixelBuffer, 0u, RENDER_SURFACE_FLT_SIZE);
+            const auto descriptorBufferInfo = vk::DescriptorBufferInfo(pixelBuffer, 0u, commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32));
             const auto writeDescriptorSet = vk::WriteDescriptorSet(
                 descriptorSet, 0u, 0u, 1u,
                 vk::DescriptorType::eStorageBuffer, nullptr, &descriptorBufferInfo
@@ -302,8 +428,8 @@ int main(int argc, char** argv) {
 
             commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, computePipeline);
             commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, computePipelineLayout, 0, 1u, &descriptorSet, 0, nullptr);
-            commandBuffer.dispatch((uint32_t)std::ceil(RENDER_SURFACE_WIDTH / (float)GPU_WORKGROUP_SIZE),
-                (uint32_t)std::ceil(RENDER_SURFACE_HEIGHT / (float)GPU_WORKGROUP_SIZE), 1);
+            commandBuffer.dispatch((uint32_t)std::ceil(commandLineArguments.surfaceWidth / (float)GPU_WORKGROUP_SIZE),
+                (uint32_t)std::ceil(commandLineArguments.surfaceHeight / (float)GPU_WORKGROUP_SIZE), 1);
 
             commandBuffer.end();
         }
@@ -327,88 +453,21 @@ int main(int argc, char** argv) {
         }
 
         { // Save Image
-            float* f32Image = (float*)logicalDevice.mapMemory(pixelBufferDeviceMemory, 0, RENDER_SURFACE_FLT_SIZE);
+            float* f32Image = (float*)logicalDevice.mapMemory(pixelBufferDeviceMemory, 0, commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32));
 
-            std::unique_ptr<std::uint8_t[]> pU8Image = std::make_unique<std::uint8_t[]>(RENDER_SURFACE_U8_SIZE);
+            Image frame(commandLineArguments.surfaceWidth, commandLineArguments.surfaceHeight);
 
-            for (std::uint64_t i = 0; i < RENDER_SURFACE_PIXEL_COUNT; i++) {
-                pU8Image[i * 4 + 0] = (std::uint8_t)std::clamp(f32Image[i * 4 + 0] * 255.f, 0.f, 255.f);
-                pU8Image[i * 4 + 1] = (std::uint8_t)std::clamp(f32Image[i * 4 + 1] * 255.f, 0.f, 255.f);
-                pU8Image[i * 4 + 2] = (std::uint8_t)std::clamp(f32Image[i * 4 + 2] * 255.f, 0.f, 255.f);
-                pU8Image[i * 4 + 3] = (std::uint8_t)std::clamp(f32Image[i * 4 + 3] * 255.f, 0.f, 255.f);
+            for (std::uint32_t i = 0; i < frame.GetPixelCount(); i++) {
+                Coloru8& pixel = frame(i);
+                pixel.r = static_cast<std::uint8_t>(std::clamp(f32Image[i * 4 + 0] * 255.f, 0.f, 255.f));
+                pixel.g = static_cast<std::uint8_t>(std::clamp(f32Image[i * 4 + 1] * 255.f, 0.f, 255.f));
+                pixel.b = static_cast<std::uint8_t>(std::clamp(f32Image[i * 4 + 2] * 255.f, 0.f, 255.f));
+                pixel.a = static_cast<std::uint8_t>(std::clamp(f32Image[i * 4 + 3] * 255.f, 0.f, 255.f));
             }
 
             logicalDevice.unmapMemory(pixelBufferDeviceMemory);
 
-#ifdef _WIN32 // Save as .PNG
-
-            const std::string  filename = GenerateOutpuFilename() + ".png";
-            const std::wstring filenameW(filename.begin(), filename.end());
-
-            Microsoft::WRL::ComPtr<IWICImagingFactory>    factory;
-            Microsoft::WRL::ComPtr<IWICBitmapEncoder>     bitmapEncoder;
-            Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> bitmapFrame;
-            Microsoft::WRL::ComPtr<IWICStream>            outputStream;
-
-            if (CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Could Not Create IWICImagingFactory");
-
-            if (factory->CreateStream(&outputStream) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Create Output Stream");
-
-            if (outputStream->InitializeFromFilename(filenameW.c_str(), GENERIC_WRITE) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Initialize Output Stream From Filename");
-
-            if (factory->CreateEncoder(GUID_ContainerFormatPng, NULL, &bitmapEncoder) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Create Bitmap Encoder");
-
-            if (bitmapEncoder->Initialize(outputStream.Get(), WICBitmapEncoderNoCache) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Initialize Bitmap ");
-
-            if (bitmapEncoder->CreateNewFrame(&bitmapFrame, NULL) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Create A New Frame");
-
-            if (bitmapFrame->Initialize(NULL) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Initialize A Bitmap's Frame");
-
-            if (bitmapFrame->SetSize(RENDER_SURFACE_WIDTH, RENDER_SURFACE_HEIGHT) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Set A Bitmap's Frame's Size");
-
-            WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
-            if (bitmapFrame->SetPixelFormat(&pixelFormat) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Set Pixel Format On A Bitmap Frame's");
-
-            if (!IsEqualGUID(pixelFormat, GUID_WICPixelFormat32bppBGRA))
-                THROW_FATAL_ERROR("[WIC] The Requested Pixel Format Is Not Supported");
-
-            if (bitmapFrame->WritePixels(RENDER_SURFACE_HEIGHT, RENDER_SURFACE_U8_STRIDE, RENDER_SURFACE_U8_SIZE, (BYTE*)pU8Image.get()) != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Write Pixels To A Bitmap's Frame");
-
-            if (bitmapFrame->Commit() != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Commit A Bitmap's Frame");
-
-            if (bitmapEncoder->Commit() != S_OK)
-                THROW_FATAL_ERROR("[WIC] Failed To Commit Bitmap Encoder");
-
-#else // Save as .PAM (P7 https://en.wikipedia.org/wiki/Netpbm)
-
-            const std::string filename = GenerateOutpuFilename() + ".pam";
-
-            // Open
-            FILE* fp = std::fopen(filename.c_str(), "wb");
-
-            if (fp) {
-                // Header
-                std::fprintf(fp, "P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\n MAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n", RENDER_SURFACE_WIDTH, RENDER_SURFACE_HEIGHT);
-
-                // Write Contents
-                std::fwrite(pU8Image.get(), RENDER_SURFACE_U8_SIZE, 1u, fp);
-
-                // Close
-                std::fclose(fp);
-            }
-
-#endif
+            frame.Save(GenerateOutputFilename());
         }
 
         { // Destroy Vulkan Objects
