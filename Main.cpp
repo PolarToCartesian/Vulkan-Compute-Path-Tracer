@@ -28,7 +28,7 @@
 #endif
 
 // Meant to be modified
-#define GPU_WORKGROUP_SIZE    (32)       // NVIDIA: 32, AMD: 64
+#define GPU_WORKGROUP_SIZE (32u) // NVIDIA: 32, AMD: 64
 
 struct Coloru8 {
     std::uint8_t r, g, b, a;
@@ -52,13 +52,13 @@ public:
 
     Image(const std::uint16_t width, const std::uint16_t height) noexcept
         : m_width(width), m_height(height),
-          m_nPixels(static_cast<std::uint32_t>(width) * height)
+        m_nPixels(static_cast<std::uint32_t>(width)* height)
     {
         this->m_pBuff = std::make_unique<Coloru8[]>(this->m_nPixels);
     }
 
-    inline std::uint16_t GetWidth()      const noexcept { return this->m_width;   }
-    inline std::uint16_t GetHeight()     const noexcept { return this->m_height;  }
+    inline std::uint16_t GetWidth()      const noexcept { return this->m_width; }
+    inline std::uint16_t GetHeight()     const noexcept { return this->m_height; }
     inline std::uint32_t GetPixelCount() const noexcept { return this->m_nPixels; }
 
     inline Coloru8* GetBufferPtr() const noexcept { return this->m_pBuff.get(); }
@@ -106,7 +106,7 @@ public:
 
         const WICPixelFormatGUID desiredPixelFormat = GUID_WICPixelFormat32bppBGRA;
 
-        WICPixelFormatGUID currentPixelFormat;
+        WICPixelFormatGUID currentPixelFormat = {};
         if (bitmapFrame->SetPixelFormat(&currentPixelFormat) != S_OK)
             THROW_FATAL_ERROR("[WIC] Failed To Set Pixel Format On A Bitmap Frame's");
 
@@ -163,30 +163,119 @@ CommandLineArguments ParseCommandLineArguments(int argc, char** argv) noexcept {
     CommandLineArguments result;
 
     auto ExtractCommandLineValueForOption = [argc, argv](const char* option) {
-        for (size_t i = 1u; i < argc; i++)
+        for (size_t i = 1u; i < argc; ++i)
             if (std::strcmp(argv[i], option) == 0)
                 return argv[i + 1];
 
         throw std::runtime_error("Missing Command Line Argument !");
     };
 
-    result.surfaceWidth  = std::atoi(ExtractCommandLineValueForOption("-w"));
+    result.surfaceWidth = std::atoi(ExtractCommandLineValueForOption("-w"));
     result.surfaceHeight = std::atoi(ExtractCommandLineValueForOption("-h"));
 
     return result;
 }
 
-int main(int argc, char** argv) {
-    auto commandLineArguments = ParseCommandLineArguments(argc, argv);
-
-    std::printf("Width: %d, Height: %d\n", commandLineArguments.surfaceWidth, commandLineArguments.surfaceHeight);
-
+void InitOSApis() {
 #ifdef _WIN32
 
     if (CoInitialize(NULL) != S_OK)
         THROW_FATAL_ERROR("[COM] Failed To Init COM");
 
 #endif // _WIN32
+}
+
+void UninitOSApis() {
+#ifdef _WIN32
+
+    CoUninitialize();
+
+#endif // _WIN32
+}
+
+class VulkanBuffer {
+private:
+    size_t m_size;
+
+    const vk::Device& m_device;
+
+    vk::Buffer       m_buffer;
+    vk::DeviceMemory m_memory;
+
+public:
+    VulkanBuffer() = default;
+
+    VulkanBuffer(const vk::Device& device, const size_t size, const vk::BufferUsageFlagBits& usage, const std::vector<std::uint32_t>& queues) noexcept
+        : m_size(size), m_device(device)
+    {
+        // Create The Buffer
+        const auto bufferCreateInfo = vk::BufferCreateInfo(
+            vk::BufferCreateFlags{}, this->m_size,
+            usage,                   vk::SharingMode::eExclusive,
+            queues.size(),           queues.data()
+        );
+
+        this->m_buffer = device.createBuffer(bufferCreateInfo);
+    }
+
+    void Allocate(const vk::PhysicalDevice& physicalDevice, const vk::MemoryPropertyFlags& memoryRequirements) noexcept {
+        // Prelogue
+        const auto physicalDeviceMemoryProperties = physicalDevice.getMemoryProperties();
+
+        // Pick A Compatible Memory Type And Get Its Index
+        const auto bufferMemoryRequirements = this->m_device.getBufferMemoryRequirements(this->m_buffer);
+
+        for (std::uint32_t i = 0u; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
+            const bool condition0 = bufferMemoryRequirements.memoryTypeBits & (1 << i);
+            const bool condition1 = (physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & memoryRequirements) == memoryRequirements;
+
+            if (condition0 && condition1) {
+                // When Compatible
+                // Allocate Buffer Memory
+                const auto memoryAllocateInfo = vk::MemoryAllocateInfo(bufferMemoryRequirements.size, i);
+                this->m_memory = this->m_device.allocateMemory(memoryAllocateInfo);
+                return;
+            }
+        }
+
+        throw std::runtime_error("Could not find a suitable memory type to allocate a buffer");
+    }
+
+    void Bind() const noexcept {
+        // TODO: use one big buffer with suballocations
+        this->m_device.bindBufferMemory(this->m_buffer, this->m_memory, 0u);
+    }
+
+    void* MapMemory() const noexcept {
+        return this->m_device.mapMemory(this->m_memory, 0u, this->m_size);
+    }
+
+    void UnMapMemory() const noexcept {
+        this->m_device.unmapMemory(this->m_memory);
+    }
+
+    void UnAllocate() const noexcept {
+        this->m_device.freeMemory(this->m_memory);
+    }
+
+    void Destroy() const noexcept {
+        this->m_device.destroyBuffer(this->m_buffer);
+    }
+
+    vk::DescriptorBufferInfo GetDescriptorBufferInfo() const noexcept {
+        return vk::DescriptorBufferInfo(this->m_buffer, 0, this->m_size);
+    }
+
+    const vk::Buffer&       GetBuffer()       const noexcept { return this->m_buffer; }
+    const vk::DeviceMemory& GetDeviceMemory() const noexcept { return this->m_memory; }
+};
+
+int main(int argc, char** argv) {
+    InitOSApis();
+
+    const auto commandLineArguments = ParseCommandLineArguments(argc, argv);
+
+    std::printf("Width: %d, Height: %d\n", commandLineArguments.surfaceWidth, commandLineArguments.surfaceHeight);
 
     try {
 #ifndef _DEBUG
@@ -293,42 +382,10 @@ int main(int argc, char** argv) {
             computeQueue = logicalDevice.getQueue(computeQueueIndex, 0);
         }
 
-        vk::Buffer       pixelBuffer;
-        vk::DeviceMemory pixelBufferDeviceMemory;
-        { // Create And Allocate Shader Resources
-            const auto PickCompatibleMemoryType = [&logicalDevice, &physicalDeviceMemoryProperties](const vk::Buffer& buffer, const vk::MemoryPropertyFlags& memoryFlagRequirements) {
-                const auto bufferMemoryRequirements = logicalDevice.getBufferMemoryRequirements(buffer);
-
-                for (std::uint32_t i = 0u; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
-                    const bool condition0 = bufferMemoryRequirements.memoryTypeBits & (1 << i);
-                    const bool condition1 = (physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags & memoryFlagRequirements) == memoryFlagRequirements;
-
-                    if (condition0 && condition1)
-                        return vk::MemoryAllocateInfo(bufferMemoryRequirements.size, i);
-                }
-
-                throw std::runtime_error("Could not find a suitable memory type to allocate a buffer");
-            };
-
-            // Create Render Buffer
-            const auto bufferCreateInfo = vk::BufferCreateInfo(
-                vk::BufferCreateFlags{},
-                commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32),
-                vk::BufferUsageFlagBits::eStorageBuffer,
-                vk::SharingMode::eExclusive,
-                1u,
-                &computeQueueIndex
-            );
-
-            pixelBuffer = logicalDevice.createBuffer(bufferCreateInfo);
-
-            // Allocate Buffer Memory
-            const auto memoryAllocateInfo = PickCompatibleMemoryType(pixelBuffer, vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible);
-            pixelBufferDeviceMemory = logicalDevice.allocateMemory(memoryAllocateInfo);
-
-            // Bind Buffer Memory
-            logicalDevice.bindBufferMemory(pixelBuffer, pixelBufferDeviceMemory, 0);
-        }
+        const std::vector<std::uint32_t> pQueues = { computeQueueIndex };
+        VulkanBuffer pixelBuffer(logicalDevice, commandLineArguments.surfaceWidth* commandLineArguments.surfaceHeight * sizeof(Colorf32), vk::BufferUsageFlagBits::eStorageBuffer, pQueues);
+        pixelBuffer.Allocate(physicalDevice, vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eDeviceLocal);
+        pixelBuffer.Bind();
 
         vk::DescriptorSetLayout        descriptorSetLayout;
         vk::DescriptorPool             descriptorPool;
@@ -363,8 +420,8 @@ int main(int argc, char** argv) {
             descriptorSet = std::move(logicalDevice.allocateDescriptorSets(descriptorSetAllocateInfo)[0]);
 
             // Initialize Descriptor Set
-            const auto descriptorBufferInfo = vk::DescriptorBufferInfo(pixelBuffer, 0u, commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32));
-            const auto writeDescriptorSet = vk::WriteDescriptorSet(
+            const auto descriptorBufferInfo = pixelBuffer.GetDescriptorBufferInfo();
+            const auto writeDescriptorSet   = vk::WriteDescriptorSet(
                 descriptorSet, 0u, 0u, 1u,
                 vk::DescriptorType::eStorageBuffer, nullptr, &descriptorBufferInfo
             );
@@ -453,7 +510,7 @@ int main(int argc, char** argv) {
         }
 
         { // Save Image
-            float* f32Image = (float*)logicalDevice.mapMemory(pixelBufferDeviceMemory, 0, commandLineArguments.surfaceWidth * commandLineArguments.surfaceHeight * sizeof(Colorf32));
+            float* f32Image = reinterpret_cast<float*>(pixelBuffer.MapMemory());
 
             Image frame(commandLineArguments.surfaceWidth, commandLineArguments.surfaceHeight);
 
@@ -465,7 +522,7 @@ int main(int argc, char** argv) {
                 pixel.a = static_cast<std::uint8_t>(std::clamp(f32Image[i * 4 + 3] * 255.f, 0.f, 255.f));
             }
 
-            logicalDevice.unmapMemory(pixelBufferDeviceMemory);
+            pixelBuffer.UnMapMemory();
 
             frame.Save(GenerateOutputFilename());
         }
@@ -480,8 +537,8 @@ int main(int argc, char** argv) {
             logicalDevice.resetDescriptorPool(descriptorPool);
             logicalDevice.destroyDescriptorPool(descriptorPool);
             logicalDevice.destroyDescriptorSetLayout(descriptorSetLayout);
-            logicalDevice.destroyBuffer(pixelBuffer);
-            logicalDevice.freeMemory(pixelBufferDeviceMemory);
+            pixelBuffer.UnAllocate();
+            pixelBuffer.Destroy();
             logicalDevice.destroy();
             instance.destroy();
         }
@@ -492,12 +549,6 @@ int main(int argc, char** argv) {
     catch (std::runtime_error re) {
         std::printf("Fatal Error %s\n", re.what());
     }
-
-#ifdef _WIN32
-
-    CoUninitialize();
-
-#endif // _WIN32
 
     return 0;
 }
