@@ -1,1 +1,0 @@
-glslc -x glsl -fshader-stage=compute shader.glsl -o shader.bin

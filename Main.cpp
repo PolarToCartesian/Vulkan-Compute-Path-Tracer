@@ -149,7 +149,7 @@ std::string GenerateOutputFilename() noexcept { // the filename w/o the extensio
     const std::tm* timePtr = std::localtime(&cTime);
 
     char buff[100] = { 0 }; // filename
-    std::snprintf(buff, sizeof(buff), "%d-%d-%d, %d-%d-%d", timePtr->tm_mday, timePtr->tm_mon, timePtr->tm_year, timePtr->tm_hour, timePtr->tm_min, timePtr->tm_sec);
+    std::snprintf(buff, sizeof(buff), "frame-%d-%d-%d, %d-%d-%d", timePtr->tm_mday, timePtr->tm_mon, timePtr->tm_year, timePtr->tm_hour, timePtr->tm_min, timePtr->tm_sec);
 
     return std::string(buff);
 }

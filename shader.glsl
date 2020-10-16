@@ -138,7 +138,7 @@ vec4 TracePath(Ray ray) {
   Intersection intersections[MAX_ITERATIONS];
   for (uint i = 0; i < MAX_ITERATIONS; i++) { intersections[i].t = FLT_MAX; }
 
-  uint intersectionCount = 1;
+  uint intersectionCount = 0;
   for (uint bounceIndex = 0; bounceIndex < MAX_ITERATIONS; bounceIndex++) {
     Intersection intersection = FindClosestIntersection(ray);
 
